@@ -15,10 +15,7 @@ kernel::module!("e1000", Version::new(1, 0, 0));
 /// Called on module load
 #[no_mangle]
 pub extern "C" fn init() -> bool {
-	let _driver = E1000Driver {};
-	// TODO Register driver
-
-	true
+	kernel::device::driver::register(E1000Driver {}).is_ok()
 }
 
 /// Called on module unload
