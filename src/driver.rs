@@ -19,7 +19,7 @@ pub struct E1000Driver {}
 impl E1000Driver {
 	/// Creates a new instance.
 	pub fn new() -> Self {
-		let ptr = manager::get_by_name("pci").unwrap();
+		let ptr = manager::get_by_name("PCI").unwrap();
 		let guard = ptr.get_mut().unwrap().lock(true);
 		let pci_manager = unsafe {
 			&*(guard.get() as *const _ as *const pci::PCIManager)
@@ -46,16 +46,21 @@ impl Driver for E1000Driver {
 		match dev.get_device_id() {
 			// TODO Add real NICs
 			DEVICE_EMU => {
-				let nic = NIC::new(dev).unwrap(); // TODO Handle properly
+				match NIC::new(dev) {
+					Ok(nic) => {
+						// TODO rm
+						let mac = nic.get_mac();
+						kernel::print!("MAC: {}", mac[0]);
+						for i in 1..6 {
+							kernel::print!(":{}", mac[i]);
+						}
 
-				// TODO rm
-				let mac = nic.get_mac();
-				kernel::print!("MAC: {}", mac[0]);
-				for i in 1..6 {
-					kernel::print!(":{}", mac[i]);
+						// TODO Insert a new device on the network manager?
+					},
+					Err(e) => {
+						kernel::println!("e1000 error: {}", e);
+					},
 				}
-
-				// TODO Insert a new device on the network manager?
 			},
 
 			_ => {},
