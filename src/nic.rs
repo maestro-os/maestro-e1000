@@ -74,11 +74,12 @@ impl NIC {
 		let bar0_type = bar0.get_type();
 		let mem_base_addr = bar0.get_physical_address() as *mut ();
 
-		let flash_base_addr = dev.get_bar(2).ok_or("Invalid BAR for NIC!")?
+		let flash_base_addr = dev.get_bar(1).ok_or("Invalid BAR for NIC!")?
 			.get_physical_address() as *mut ();
-		let io_base_addr = dev.get_bar(4).ok_or("Invalid BAR for NIC!")?
+		let io_base_addr = dev.get_bar(2).ok_or("Invalid BAR for NIC!")?
 			.get_physical_address() as *mut ();
 
+		kernel::println!("{:p} {:p} {:p}", mem_base_addr, flash_base_addr, io_base_addr); // TODO rm
 		let mut n = Self {
 			status_reg,
 			command_reg,
