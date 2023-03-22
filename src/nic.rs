@@ -2,7 +2,15 @@
 
 use kernel::device::bar::BAR;
 use kernel::device::manager::PhysicalDevice;
-use kernel::device::network::NetworkInterface;
+use kernel::errno::Errno;
+use kernel::net::BindAddress;
+use kernel::net::MAC;
+use kernel::net;
+
+/// Register address: EEPROM/Flash Control & Data
+const REG_EECD: u16 = 0x10;
+/// Register address: EEPROM Read Register
+const REG_EERD: u16 = 0x14;
 
 /// The receive descriptor.
 #[repr(packed)]
@@ -51,7 +59,7 @@ pub struct NIC {
 	bar0: BAR,
 
 	/// Tells whether the EEPROM exist.
-	eeprom_exist: bool,
+	eeprom_exists: bool,
 
 	/// The NIC's mac address.
 	mac: [u8; 6],
@@ -71,7 +79,7 @@ impl NIC {
 
 			bar0,
 
-			eeprom_exist: false,
+			eeprom_exists: false,
 
 			mac: [0; 6],
 		};
@@ -92,21 +100,50 @@ impl NIC {
 	}
 
 	/// Detects whether the EEPROM exists.
-	fn detect_eeprom(&mut self) -> bool {
-		// TODO
-		todo!();
+	fn detect_eeprom(&mut self) {
+		self.eeprom_exists = self.read_command(REG_EECD) & (1 << 8) != 0;
 	}
 
 	/// Reads from the EEPROM at address `addr`.
-	fn eeprom_read(&self, _addr: u8) -> u32 {
-		// TODO
-		todo!();
+	fn eeprom_read(&self, addr: u8) -> u32 {
+		// Acquire EEPROM
+		self.write_command(REG_EECD, self.read_command(REG_EECD) | (1 << 6));
+
+		// Specify read address
+		self.write_command(REG_EERD, 1 | ((addr as u32) << 8));
+
+		// Waiting until the EEPROM is available, then read
+		let data = loop {
+			let val = self.read_command(REG_EECD);
+			if val & (1 << 7) != 0 {
+				break (val >> 16) & 0xffff;
+			}
+		};
+
+		// Release EEPROM
+		self.write_command(REG_EECD, self.read_command(REG_EECD) & !(1 << 6));
+
+		data
 	}
 
 	/// Reads the MAC address from the NIC's EEPROM.
 	fn read_mac(&mut self) {
-		// TODO If the EEPROM exists, read from it. Else, read from memory
-		todo!();
+		if self.eeprom_exists {
+			let val = self.eeprom_read(0);
+			self.mac[0] = (val & 0xff) as u8;
+			self.mac[1] = ((val >> 8) & 0xff) as u8;
+
+			let val = self.eeprom_read(1);
+			self.mac[2] = (val & 0xff) as u8;
+			self.mac[3] = ((val >> 8) & 0xff) as u8;
+
+			let val = self.eeprom_read(2);
+			self.mac[4] = (val & 0xff) as u8;
+			self.mac[5] = ((val >> 8) & 0xff) as u8;
+		} else {
+			// TODO read from memory
+			todo!();
+		}
 	}
 
 	/// Receives data using the given descriptor.
@@ -122,14 +159,32 @@ impl NIC {
 	}
 }
 
-impl NetworkInterface for NIC {
-	fn get_mac(&self) -> [u8; 6] {
-		self.mac
+impl net::Interface for NIC {
+	fn get_name(&self) -> &[u8] {
+		// TODO replace "TODO" with interface ID
+		b"ethTODO"
 	}
 
-	// TODO Reading (use interrupts)
+	fn is_up(&self) -> bool {
+		// TODO
+		todo!();
+	}
 
-	fn write(&self, _buff: &[u8]) -> usize {
+	fn get_mac(&self) -> &MAC {
+		&self.mac
+	}
+
+	fn get_addresses(&self) -> &[BindAddress] {
+		// TODO
+		todo!();
+	}
+
+	fn read(&mut self, _buff: &mut [u8]) -> Result<(u64, bool), Errno> {
+		// TODO
+		todo!();
+	}
+
+	fn write(&mut self, _buff: &[u8]) -> Result<u64, Errno> {
 		// TODO
 		todo!();
 	}

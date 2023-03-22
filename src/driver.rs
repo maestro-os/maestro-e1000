@@ -1,10 +1,11 @@
 //! This module implements the driver structure.
 
+use core::any::Any;
 use kernel::device::bus::pci;
 use kernel::device::driver::Driver;
 use kernel::device::manager::PhysicalDevice;
 use kernel::device::manager;
-use kernel::device::network::NetworkInterface;
+use kernel::net::Interface;
 use nic::NIC;
 
 /// Vendor ID for Intel.
@@ -21,9 +22,8 @@ impl E1000Driver {
 	pub fn new() -> Self {
 		let manager_ptr = manager::get_by_name("PCI").unwrap();
 		let manager_mutex = manager_ptr.get().unwrap();
-		let pci_manager = unsafe {
-			&*(&manager_mutex.lock() as *const _ as *const pci::PCIManager)
-		};
+		let manager = &*manager_mutex.lock() as &dyn Any;
+		let pci_manager = manager.downcast_ref::<pci::PCIManager>().unwrap();
 
 		let s = Self {};
 

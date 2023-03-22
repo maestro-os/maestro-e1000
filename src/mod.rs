@@ -1,5 +1,6 @@
 //! This kernel module implements a driver for the Intel e1000 ethernet controllers.
 
+#![feature(trait_upcasting)]
 #![no_std]
 
 extern crate kernel;
@@ -21,5 +22,5 @@ pub extern "C" fn init() -> bool {
 /// Called on module unload
 #[no_mangle]
 pub extern "C" fn fini() {
-	// TODO Unregister driver
+	kernel::device::driver::unregister("e1000");
 }
