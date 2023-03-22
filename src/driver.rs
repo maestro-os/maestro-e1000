@@ -19,16 +19,18 @@ pub struct E1000Driver {}
 impl E1000Driver {
 	/// Creates a new instance.
 	pub fn new() -> Self {
-		let ptr = manager::get_by_name("PCI").unwrap();
-		let guard = ptr.get_mut().unwrap().lock(true);
+		let manager_ptr = manager::get_by_name("PCI").unwrap();
+		let manager_mutex = manager_ptr.get().unwrap();
 		let pci_manager = unsafe {
-			&*(guard.get() as *const _ as *const pci::PCIManager)
+			&*(&manager_mutex.lock() as *const _ as *const pci::PCIManager)
 		};
 
 		let s = Self {};
+
 		for dev in pci_manager.get_devices() {
 			s.on_plug(dev);
 		}
+
 		s
 	}
 }
@@ -57,6 +59,7 @@ impl Driver for E1000Driver {
 
 						// TODO Insert a new device on the network manager?
 					},
+
 					Err(e) => {
 						kernel::println!("e1000 error: {}", e);
 					},
@@ -68,6 +71,7 @@ impl Driver for E1000Driver {
 	}
 
 	fn on_unplug(&self, _dev: &dyn PhysicalDevice) {
-		// TODO Remove the corresponding device from the network manager?
+		// TODO
+		todo!();
 	}
 }

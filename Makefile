@@ -9,17 +9,20 @@ MOD_FILE = $(NAME).kmod
 KERN_SRC ?=
 
 # The architecture to compile for
-CONFIG_ARCH ?= $(shell cd $(KERN_SRC) && scripts/config_attr.sh general_arch)
+CONFIG_ARCH ?= $(shell cd $(KERN_SRC) && scripts/config_attr.sh GENERAL_ARCH)
 # Tells whether to compile in debug mode
-CONFIG_DEBUG := $(shell cd $(KERN_SRC) && scripts/config_attr.sh debug_debug)
+CONFIG_DEBUG := $(shell cd $(KERN_SRC) && scripts/config_attr.sh DEBUG_DEBUG)
 
 # The absolute path to the target file
 TARGET_PATH := $(shell realpath "$(KERN_SRC)/arch/$(CONFIG_ARCH)/target.json")
 
 # The flags for the Rust compiler
-RUSTFLAGS = -Zmacro-backtrace --crate-type dylib -C prefer-dynamic -L $(KERN_SRC)/target/target/debug -L $(KERN_SRC)/target/target/debug/deps --target $(TARGET_PATH)
+RUSTFLAGS = -Zmacro-backtrace --crate-type dylib -C prefer-dynamic --target $(TARGET_PATH)
 ifeq ($(CONFIG_DEBUG), false)
 RUSTFLAGS += -C opt-level=3
+RUSTFLAGS += -L $(KERN_SRC)/target/release/deps -L $(KERN_SRC)/target/target/release -L $(KERN_SRC)/target/target/release/deps
+else
+RUSTFLAGS += -L $(KERN_SRC)/target/debug/deps -L $(KERN_SRC)/target/target/debug -L $(KERN_SRC)/target/target/debug/deps
 endif
 
 ifeq ($(KERN_SRC), )

@@ -1,4 +1,4 @@
-//! TODO doc
+//! This kernel module implements a driver for the Intel e1000 ethernet controllers.
 
 #![no_std]
 
@@ -10,7 +10,7 @@ mod nic;
 use driver::E1000Driver;
 use kernel::module::version::Version;
 
-kernel::module!("e1000", Version::new(1, 0, 0));
+kernel::module!("e1000", Version::new(1, 0, 0), &[]);
 
 /// Called on module load
 #[no_mangle]
