@@ -19,16 +19,17 @@ struct RXDesc {
 	addr: u64,
 	/// The length of the data.
 	length: u16,
-	/// TODO doc
+	/// The packet's checksum.
 	checksum: u16,
-	/// TODO doc
+	/// Status flags.
 	status: u8,
-	/// TODO doc
+	/// Error flags.
 	errors: u8,
 	/// TODO doc
 	special: u16,
 }
 
+// TODO: This is the legacy structure. Add support for the new version
 /// The transmit descriptor.
 #[repr(packed)]
 struct TXDesc {
@@ -36,13 +37,13 @@ struct TXDesc {
 	addr: u64,
 	/// The length of the data.
 	length: u16,
-	/// TODO doc
+	/// CheckSum Offset: the offset at which the checksum is to be placed in the given data.
 	cso: u8,
-	/// TODO doc
+	/// Command flags.
 	cmd: u8,
-	/// TODO doc
+	/// Status flags.
 	status: u8,
-	/// TODO doc
+	/// CheckSum Start: the offset at which computation of the checksum starts in the given data.
 	css: u8,
 	/// TODO doc
 	special: u16,
