@@ -58,6 +58,7 @@ impl Driver for E1000Driver {
 						}
 
 						// TODO Insert a new device on the network manager?
+						todo!();
 					},
 
 					Err(e) => {

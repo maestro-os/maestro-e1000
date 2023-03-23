@@ -142,7 +142,7 @@ impl NIC {
 			self.mac[4] = (val & 0xff) as u8;
 			self.mac[5] = ((val >> 8) & 0xff) as u8;
 		} else {
-			// TODO read from memory
+			// TODO
 			todo!();
 		}
 	}
