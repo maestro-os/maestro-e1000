@@ -72,7 +72,7 @@ impl NIC {
 		let status_reg = dev.get_status_reg().ok_or("Invalid PCI informations for NIC!")?;
 		let command_reg = dev.get_command_reg().ok_or("Invalid PCI informations for NIC!")?;
 
-		let bar0 = dev.get_bar(0).ok_or("Invalid BAR for NIC!")?;
+		let bar0 = dev.get_bars()[0].clone().ok_or("Invalid BAR for NIC!")?;
 
 		let mut n = Self {
 			status_reg,
@@ -113,12 +113,16 @@ impl NIC {
 		// Specify read address
 		self.write_command(REG_EERD, 1 | ((addr as u32) << 8));
 
-		// Waiting until the EEPROM is available, then read
-		let data = loop {
-			let val = self.read_command(REG_EECD);
-			if val & (1 << 7) != 0 {
-				break (val >> 16) & 0xffff;
+		let data = if self.eeprom_exists {
+			loop {
+				let val = self.read_command(REG_EERD);
+				if val & (1 << 4) != 0 {
+					break (val >> 16) & 0xffff;
+				}
 			}
+		} else {
+			// TODO
+			todo!();
 		};
 
 		// Release EEPROM
@@ -129,22 +133,17 @@ impl NIC {
 
 	/// Reads the MAC address from the NIC's EEPROM.
 	fn read_mac(&mut self) {
-		if self.eeprom_exists {
-			let val = self.eeprom_read(0);
-			self.mac[0] = (val & 0xff) as u8;
-			self.mac[1] = ((val >> 8) & 0xff) as u8;
+		let val = self.eeprom_read(0);
+		self.mac[0] = (val & 0xff) as u8;
+		self.mac[1] = ((val >> 8) & 0xff) as u8;
 
-			let val = self.eeprom_read(1);
-			self.mac[2] = (val & 0xff) as u8;
-			self.mac[3] = ((val >> 8) & 0xff) as u8;
+		let val = self.eeprom_read(1);
+		self.mac[2] = (val & 0xff) as u8;
+		self.mac[3] = ((val >> 8) & 0xff) as u8;
 
-			let val = self.eeprom_read(2);
-			self.mac[4] = (val & 0xff) as u8;
-			self.mac[5] = ((val >> 8) & 0xff) as u8;
-		} else {
-			// TODO
-			todo!();
-		}
+		let val = self.eeprom_read(2);
+		self.mac[4] = (val & 0xff) as u8;
+		self.mac[5] = ((val >> 8) & 0xff) as u8;
 	}
 
 	/// Receives data using the given descriptor.

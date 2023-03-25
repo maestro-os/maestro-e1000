@@ -50,15 +50,8 @@ impl Driver for E1000Driver {
 			DEVICE_EMU => {
 				match NIC::new(dev) {
 					Ok(nic) => {
-						// TODO rm
-						let mac = nic.get_mac();
-						kernel::print!("MAC: {}", mac[0]);
-						for i in 1..6 {
-							kernel::print!(":{}", mac[i]);
-						}
-
 						// TODO Insert a new device on the network manager?
-						todo!();
+						panic!();
 					},
 
 					Err(e) => {
