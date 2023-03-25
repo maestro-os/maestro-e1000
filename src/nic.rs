@@ -1,4 +1,4 @@
-//! This module implements the NIC structure, representing a e1000-compatible NIC.
+//! This module implements the NIC structure, representing an e1000-compatible NIC.
 
 use kernel::device::bar::BAR;
 use kernel::device::manager::PhysicalDevice;
@@ -11,6 +11,21 @@ use kernel::net;
 const REG_EECD: u16 = 0x10;
 /// Register address: EEPROM Read Register
 const REG_EERD: u16 = 0x14;
+
+/// Transmit descriptor command flag: End of Packet
+const TX_CMD_EOP: u8 = 0x01;
+/// Transmit descriptor command flag: Insertion of FCS
+const TX_CMD_IFCS: u8 = 0x02;
+/// Transmit descriptor command flag: Insert checksum
+const TX_CMD_IC: u8 = 0x04;
+/// Transmit descriptor command flag: Report status
+const TX_CMD_RS: u8 = 0x08;
+/// Transmit descriptor command flag: Report Packet Sent
+const TX_CMD_RPS: u8 = 0x10;
+/// Transmit descriptor command flag: VLAN Packet Enable
+const TX_CMD_VLE: u8 = 0x40;
+/// Transmit descriptor command flag: Interrupt Delay Enable
+const TX_CMD_IDE: u8 = 0x80;
 
 /// The receive descriptor.
 #[repr(packed)]
@@ -86,6 +101,7 @@ impl NIC {
 		};
 		n.detect_eeprom();
 		n.read_mac();
+		n.init_desc();
 
 		Ok(n)
 	}
@@ -146,6 +162,12 @@ impl NIC {
 		self.mac[5] = ((val >> 8) & 0xff) as u8;
 	}
 
+	/// Initializes transmit and receive descriptors.
+	fn init_desc(&self) {
+		// TODO
+		todo!();
+	}
+
 	/// Receives data using the given descriptor.
 	fn receive(&self, _rx_desc: &mut RXDesc) {
 		// TODO
@@ -185,7 +207,23 @@ impl net::Interface for NIC {
 	}
 
 	fn write(&mut self, _buff: &[u8]) -> Result<u64, Errno> {
-		// TODO
+		// TODO do asynchronously
+		/*let mut i = 0;
+
+		while i < buff.len() {
+			let desc = &mut self.tx_descs[self.curr_tx_desc];
+			desc.addr = buff.as_ptr() as _;
+			desc.length = min(buff.len() - i, u16::MAX as usize) as _;
+			desc.cmd = ; // TODO
+			desc.status = 0;
+
+			let next_desc = (self.curr_tx_desc + 1) % TX_DESC_COUNT;
+			self.write_command(, next_desc);
+
+			// TODO wait until status is not zero
+		}
+
+		Ok(i as _)*/
 		todo!();
 	}
 }

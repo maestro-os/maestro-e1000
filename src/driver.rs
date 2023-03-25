@@ -5,7 +5,6 @@ use kernel::device::bus::pci;
 use kernel::device::driver::Driver;
 use kernel::device::manager::PhysicalDevice;
 use kernel::device::manager;
-use kernel::net::Interface;
 use nic::NIC;
 
 /// Vendor ID for Intel.
@@ -49,7 +48,7 @@ impl Driver for E1000Driver {
 			// TODO Add real NICs
 			DEVICE_EMU => {
 				match NIC::new(dev) {
-					Ok(nic) => {
+					Ok(_nic) => {
 						// TODO Insert a new device on the network manager?
 						panic!();
 					},
