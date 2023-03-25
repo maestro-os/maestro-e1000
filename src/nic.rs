@@ -1,16 +1,51 @@
 //! This module implements the NIC structure, representing an e1000-compatible NIC.
 
+use core::cmp::min;
+use core::ptr::NonNull;
 use kernel::device::bar::BAR;
 use kernel::device::manager::PhysicalDevice;
 use kernel::errno::Errno;
 use kernel::net::BindAddress;
 use kernel::net::MAC;
 use kernel::net;
+use kernel::util::container::vec::Vec;
 
 /// Register address: EEPROM/Flash Control & Data
 const REG_EECD: u16 = 0x10;
 /// Register address: EEPROM Read Register
 const REG_EERD: u16 = 0x14;
+
+/// Register address: Receive Control
+const REG_RCTL: u16 = 0x100;
+/// Register address: Transmit Control
+const REG_TCTL: u16 = 0x400;
+
+/// Register address: Transmit Descriptor Address Low
+const REG_RDBAL: u16 = 0x2800;
+/// Register address: Transmit Descriptor Address High
+const REG_RDBAH: u16 = 0x2804;
+/// Register address: Receive Descriptor Length
+const REG_RDLEN: u16 = 0x2808;
+/// Register address: Receive Descriptor Head
+const REG_RDH: u16 = 0x2810;
+/// Register address: Receive Descriptor Tail
+const REG_RDT: u16 = 0x2818;
+
+/// Register address: Transmit Descriptor Address Low
+const REG_TDBAL: u16 = 0x3800;
+/// Register address: Transmit Descriptor Address High
+const REG_TDBAH: u16 = 0x3804;
+/// Register address: Transmit Descriptor Length
+const REG_TDLEN: u16 = 0x3808;
+/// Register address: Transmit Descriptor Head
+const REG_TDH: u16 = 0x3810;
+/// Register address: Transmit Descriptor Tail
+const REG_TDT: u16 = 0x3818;
+
+/// The number of receive descriptors.
+const RX_DESC_COUNT: usize = 128; // TODO
+/// The number of transmit descriptors.
+const TX_DESC_COUNT: usize = 128; // TODO
 
 /// Transmit descriptor command flag: End of Packet
 const TX_CMD_EOP: u8 = 0x01;
@@ -28,6 +63,7 @@ const TX_CMD_VLE: u8 = 0x40;
 const TX_CMD_IDE: u8 = 0x80;
 
 /// The receive descriptor.
+#[derive(Default)]
 #[repr(packed)]
 struct RXDesc {
 	/// The physical address of the data.
@@ -46,6 +82,7 @@ struct RXDesc {
 
 // TODO: This is the legacy structure. Add support for the new version
 /// The transmit descriptor.
+#[derive(Default)]
 #[repr(packed)]
 struct TXDesc {
 	/// The physical address of the data.
@@ -79,6 +116,16 @@ pub struct NIC {
 
 	/// The NIC's mac address.
 	mac: [u8; 6],
+
+	/// The list of receive descriptors.
+	rx_descs: Vec<NonNull<RXDesc>>, // FIXME cannot use vec since buffer must be aligned at 16
+	/// The cursor in the receive ring buffer.
+	rx_cur: usize,
+
+	/// The list of transmit descriptors.
+	tx_descs: Vec<NonNull<TXDesc>>, // FIXME cannot use vec since buffer must be aligned at 16
+	/// The cursor in the transmit ring buffer.
+	tx_cur: usize,
 }
 
 impl NIC {
@@ -98,6 +145,12 @@ impl NIC {
 			eeprom_exists: false,
 
 			mac: [0; 6],
+
+			rx_descs: Vec::with_capacity(RX_DESC_COUNT).unwrap(), // TODO handle error
+			rx_cur: 0,
+
+			tx_descs: Vec::with_capacity(TX_DESC_COUNT).unwrap(), // TODO handle error
+			tx_cur: 0,
 		};
 		n.detect_eeprom();
 		n.read_mac();
@@ -164,20 +217,33 @@ impl NIC {
 
 	/// Initializes transmit and receive descriptors.
 	fn init_desc(&self) {
-		// TODO
-		todo!();
-	}
+		// TODO Init receive buffer
 
-	/// Receives data using the given descriptor.
-	fn receive(&self, _rx_desc: &mut RXDesc) {
-		// TODO
-		todo!();
-	}
+		// TODO Set receive buffer address
 
-	/// Transmits the data of the given descriptor.
-	fn transmit(&self, _tx_desc: &mut TXDesc) {
-		// TODO
-		todo!();
+		// TODO Set receive buffer length
+
+		// Set receive ring buffer head and tail
+		self.write_command(REG_RDH, 0);
+		self.write_command(REG_RDT, (RX_DESC_COUNT - 1) as _);
+
+		// Set receive flags
+		let flags = 0; // TODO
+		self.write_command(REG_RCTL, flags);
+
+		// TODO Init transmit buffer
+
+		// TODO Set transmit buffer address
+
+		// TODO Set transmit buffer length
+
+		// Set transmit ring buffer head and tail
+		self.write_command(REG_RDH, 0);
+		self.write_command(REG_RDT, 0);
+
+		// Set transmit flags
+		let flags = 0; // TODO
+		self.write_command(REG_TCTL, flags);
 	}
 }
 
@@ -206,24 +272,32 @@ impl net::Interface for NIC {
 		todo!();
 	}
 
-	fn write(&mut self, _buff: &[u8]) -> Result<u64, Errno> {
-		// TODO do asynchronously
-		/*let mut i = 0;
+	fn write(&mut self, buff: &[u8]) -> Result<u64, Errno> {
+		let mut i = 0;
+		let mut desc_count = 0;
 
-		while i < buff.len() {
-			let desc = &mut self.tx_descs[self.curr_tx_desc];
+		// Fill descriptors
+		while i < buff.len() && i < (TX_DESC_COUNT - 1) {
+			let len = min(buff.len() - i, u16::MAX as usize);
+
+			let desc = unsafe {
+				self.tx_descs[self.tx_cur].as_mut()
+			};
 			desc.addr = buff.as_ptr() as _;
-			desc.length = min(buff.len() - i, u16::MAX as usize) as _;
-			desc.cmd = ; // TODO
+			desc.length = len as _;
+			desc.cmd = 0; // TODO
 			desc.status = 0;
 
-			let next_desc = (self.curr_tx_desc + 1) % TX_DESC_COUNT;
-			self.write_command(, next_desc);
-
-			// TODO wait until status is not zero
+			i += len;
+			desc_count += 1;
 		}
 
-		Ok(i as _)*/
-		todo!();
+		// Update buffer tail
+		self.tx_cur = (self.tx_cur + desc_count) % TX_DESC_COUNT;
+		self.write_command(REG_TDT, self.tx_cur as _);
+
+		// TODO sleep and wait for interrupt telling the whole queue has been processed
+
+		Ok(i as _)
 	}
 }
