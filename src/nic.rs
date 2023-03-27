@@ -1,14 +1,24 @@
 //! This module implements the NIC structure, representing an e1000-compatible NIC.
 
 use core::cmp::min;
-use core::ptr::NonNull;
+use core::mem::size_of;
 use kernel::device::bar::BAR;
 use kernel::device::manager::PhysicalDevice;
 use kernel::errno::Errno;
+use kernel::memory::buddy;
+use kernel::memory;
 use kernel::net::BindAddress;
 use kernel::net::MAC;
 use kernel::net;
-use kernel::util::container::vec::Vec;
+
+/// The number of receive descriptors.
+const RX_DESC_COUNT: usize = 128;
+/// The size of a receive descriptor's buffer.
+const RX_BUFF_SIZE: usize = 16384;
+/// The number of transmit descriptors.
+const TX_DESC_COUNT: usize = 128;
+/// The size of a transmit descriptor's buffer.
+const TX_BUFF_SIZE: usize = 16384;
 
 /// Register address: EEPROM/Flash Control & Data
 const REG_EECD: u16 = 0x10;
@@ -42,10 +52,43 @@ const REG_TDH: u16 = 0x3810;
 /// Register address: Transmit Descriptor Tail
 const REG_TDT: u16 = 0x3818;
 
-/// The number of receive descriptors.
-const RX_DESC_COUNT: usize = 128; // TODO
-/// The number of transmit descriptors.
-const TX_DESC_COUNT: usize = 128; // TODO
+/// RCTL flag: Receiver Enable
+const RCTL_EN: u32 = 1 << 1;
+/// RCTL flag: Store Bad Packets
+const RCTL_SBP: u32 = 1 << 2;
+/// RCTL flag: Unicast Promiscuous Enabled
+const RCTL_UPE: u32 = 1 << 3;
+/// RCTL flag: Multicast Promiscuous Enabled
+const RCTL_MPE: u32 = 1 << 4;
+/// RCTL flag: Long Packet Reception Enable
+const RCTL_LPE: u32 = 1 << 5;
+/// RCTL flag: Broadcast Accept Mode
+const RCTL_BAM: u32 = 1 << 15;
+/// RCTL flag: VLAN Filter Enable
+const RCTL_VFE: u32 = 1 << 18;
+/// RCTL flag: Canonical Form Indicator Enable
+const RCTL_CFIEN: u32 = 1 << 19;
+/// RCTL flag: Canonical Form Indicator bit value
+const RCTL_CFI: u32 = 1 << 20;
+/// RCTL flag: Discard Pause Frames
+const RCTL_DPF: u32 = 1 << 22;
+/// RCTL flag: Pass MAC Control Frames
+const RCTL_PMCF: u32 = 1 << 23;
+/// RCTL flag: Buffer Size Extension
+const RCTL_BSEX: u32 = 1 << 25;
+/// RCTL flag: Strip Ethernet CRC from incoming packet
+const RCTL_SECRC: u32 = 1 << 26;
+
+/// TCTL flag: Transmit Enable
+const TCTL_EN: u32 = 1 << 1;
+/// TCTL flag: Pad Short Packets
+const TCTL_PSP: u32 = 1 << 3;
+/// TCTL flag: Software XOFF Transmission
+const TCTL_SWXOFF: u32 = 1 << 22;
+/// TCTL flag: Re-transmit on Late Collission
+const TCTL_RTLC: u32 = 1 << 24;
+/// TCTL flag: No Re-transmit on underrun
+const TCTL_NRTU: u32 = 1 << 25;
 
 /// Transmit descriptor command flag: End of Packet
 const TX_CMD_EOP: u8 = 0x01;
@@ -61,6 +104,8 @@ const TX_CMD_RPS: u8 = 0x10;
 const TX_CMD_VLE: u8 = 0x40;
 /// Transmit descriptor command flag: Interrupt Delay Enable
 const TX_CMD_IDE: u8 = 0x80;
+
+// TODO caches need to be flushed before reading/writing from/to receive/transmit buffers
 
 /// The receive descriptor.
 #[derive(Default)]
@@ -118,12 +163,12 @@ pub struct NIC {
 	mac: [u8; 6],
 
 	/// The list of receive descriptors.
-	rx_descs: Vec<NonNull<RXDesc>>, // FIXME cannot use vec since buffer must be aligned at 16
+	rx_descs: *mut RXDesc,
 	/// The cursor in the receive ring buffer.
 	rx_cur: usize,
 
 	/// The list of transmit descriptors.
-	tx_descs: Vec<NonNull<TXDesc>>, // FIXME cannot use vec since buffer must be aligned at 16
+	tx_descs: *mut TXDesc,
 	/// The cursor in the transmit ring buffer.
 	tx_cur: usize,
 }
@@ -131,10 +176,18 @@ pub struct NIC {
 impl NIC {
 	/// Creates a new instance using the given device.
 	pub fn new(dev: &dyn PhysicalDevice) -> Result<Self, &str> {
-		let status_reg = dev.get_status_reg().ok_or("Invalid PCI informations for NIC!")?;
-		let command_reg = dev.get_command_reg().ok_or("Invalid PCI informations for NIC!")?;
+		let status_reg = dev.get_status_reg().ok_or("Invalid PCI informations for NIC")?;
+		let command_reg = dev.get_command_reg().ok_or("Invalid PCI informations for NIC")?;
 
-		let bar0 = dev.get_bars()[0].clone().ok_or("Invalid BAR for NIC!")?;
+		let bar0 = dev.get_bars()[0].clone().ok_or("Invalid BAR for NIC")?;
+
+		let rx_order = buddy::get_order(size_of::<RXDesc>() * RX_DESC_COUNT);
+		let rx_descs = buddy::alloc_kernel(rx_order)
+			.map_err(|_| "Memory allocation failed")? as *mut RXDesc;
+
+		let tx_order = buddy::get_order(size_of::<TXDesc>() * TX_DESC_COUNT);
+		let tx_descs = buddy::alloc_kernel(tx_order)
+			.map_err(|_| "Memory allocation failed")? as *mut TXDesc;
 
 		let mut n = Self {
 			status_reg,
@@ -146,15 +199,15 @@ impl NIC {
 
 			mac: [0; 6],
 
-			rx_descs: Vec::with_capacity(RX_DESC_COUNT).unwrap(), // TODO handle error
+			rx_descs,
 			rx_cur: 0,
 
-			tx_descs: Vec::with_capacity(TX_DESC_COUNT).unwrap(), // TODO handle error
+			tx_descs,
 			tx_cur: 0,
 		};
 		n.detect_eeprom();
 		n.read_mac();
-		n.init_desc();
+		n.init_desc().map_err(|_| "Memory allocation failed")?;
 
 		Ok(n)
 	}
@@ -216,34 +269,65 @@ impl NIC {
 	}
 
 	/// Initializes transmit and receive descriptors.
-	fn init_desc(&self) {
-		// TODO Init receive buffer
+	fn init_desc(&self) -> Result<(), Errno> {
+		// Init receive ring buffer
+		let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
+		let rx_buffs = buddy::alloc(rx_buffs_order, buddy::FLAG_ZONE_TYPE_KERNEL)?;
+		for i in 0..RX_DESC_COUNT {
+			let desc = unsafe {
+				&mut *self.rx_descs.add(i)
+			};
 
-		// TODO Set receive buffer address
+			*desc = RXDesc::default();
+			desc.addr = unsafe {
+				rx_buffs.add(i * RX_BUFF_SIZE)
+			} as _;
+		}
 
-		// TODO Set receive buffer length
+		// Set receive ring buffer address
+		let phys_ptr = memory::kern_to_phys(self.rx_descs);
+		self.write_command(REG_RDBAL, ((phys_ptr as u64) & 0xffffffff) as _);
+		self.write_command(REG_RDBAH, ((phys_ptr as u64) >> 32) as _);
+
+		// Set receive ring buffer length
+		self.write_command(REG_RDLEN, (RX_DESC_COUNT * size_of::<RXDesc>()) as u32);
 
 		// Set receive ring buffer head and tail
 		self.write_command(REG_RDH, 0);
 		self.write_command(REG_RDT, (RX_DESC_COUNT - 1) as _);
 
 		// Set receive flags
-		let flags = 0; // TODO
+		let mut flags = RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM;
+		flags |= RCTL_BSEX | (0b01 << 16); // 16K buffer
 		self.write_command(REG_RCTL, flags);
 
-		// TODO Init transmit buffer
+		// Init transmit ring buffer
+		for i in 0..TX_DESC_COUNT {
+			let desc = unsafe {
+				&mut *self.tx_descs.add(i)
+			};
 
-		// TODO Set transmit buffer address
+			*desc = TXDesc::default();
+			desc.status = 0; // TODO
+		}
 
-		// TODO Set transmit buffer length
+		// Set transmit ring buffer address
+		let phys_ptr = memory::kern_to_phys(self.tx_descs);
+		self.write_command(REG_TDBAL, ((phys_ptr as u64) & 0xffffffff) as _);
+		self.write_command(REG_TDBAH, ((phys_ptr as u64) >> 32) as _);
+
+		// Set transmit ring buffer length
+		self.write_command(REG_TDLEN, (TX_DESC_COUNT * size_of::<TXDesc>()) as u32);
 
 		// Set transmit ring buffer head and tail
-		self.write_command(REG_RDH, 0);
-		self.write_command(REG_RDT, 0);
+		self.write_command(REG_TDH, 0);
+		self.write_command(REG_TDT, 0);
 
 		// Set transmit flags
 		let flags = 0; // TODO
 		self.write_command(REG_TCTL, flags);
+
+		Ok(())
 	}
 }
 
@@ -281,7 +365,7 @@ impl net::Interface for NIC {
 			let len = min(buff.len() - i, u16::MAX as usize);
 
 			let desc = unsafe {
-				self.tx_descs[self.tx_cur].as_mut()
+				&mut *self.tx_descs.add(self.tx_cur)
 			};
 			desc.addr = buff.as_ptr() as _;
 			desc.length = len as _;
@@ -299,5 +383,12 @@ impl net::Interface for NIC {
 		// TODO sleep and wait for interrupt telling the whole queue has been processed
 
 		Ok(i as _)
+	}
+}
+
+impl Drop for NIC {
+	fn drop(&mut self) {
+		// TODO free buffers
+		todo!();
 	}
 }
