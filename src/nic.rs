@@ -29,6 +29,8 @@ const REG_EERD: u16 = 0x14;
 const REG_RCTL: u16 = 0x100;
 /// Register address: Transmit Control
 const REG_TCTL: u16 = 0x400;
+/// Register address: Transmit IPG
+const REG_TIPG: u16 = 0x410;
 
 /// Register address: Transmit Descriptor Address Low
 const REG_RDBAL: u16 = 0x2800;
@@ -181,11 +183,11 @@ impl NIC {
 
 		let bar0 = dev.get_bars()[0].clone().ok_or("Invalid BAR for NIC")?;
 
-		let rx_order = buddy::get_order(size_of::<RXDesc>() * RX_DESC_COUNT);
+		let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
 		let rx_descs = buddy::alloc_kernel(rx_order)
 			.map_err(|_| "Memory allocation failed")? as *mut RXDesc;
 
-		let tx_order = buddy::get_order(size_of::<TXDesc>() * TX_DESC_COUNT);
+		let tx_order = buddy::get_order(TX_DESC_COUNT * size_of::<TXDesc>());
 		let tx_descs = buddy::alloc_kernel(tx_order)
 			.map_err(|_| "Memory allocation failed")? as *mut TXDesc;
 
@@ -324,8 +326,12 @@ impl NIC {
 		self.write_command(REG_TDT, 0);
 
 		// Set transmit flags
-		let flags = 0; // TODO
+		let retry_count = 0xf;
+		let collision_dist = 0x200;
+		let flags = TCTL_EN | (retry_count << 4) | (collision_dist << 12);
 		self.write_command(REG_TCTL, flags);
+		let flags = 0; // TODO
+		self.write_command(REG_TIPG, flags);
 
 		Ok(())
 	}
@@ -333,8 +339,7 @@ impl NIC {
 
 impl net::Interface for NIC {
 	fn get_name(&self) -> &[u8] {
-		// TODO replace "TODO" with interface ID
-		b"ethTODO"
+		b"eth"
 	}
 
 	fn is_up(&self) -> bool {
@@ -388,7 +393,16 @@ impl net::Interface for NIC {
 
 impl Drop for NIC {
 	fn drop(&mut self) {
-		// TODO free buffers
-		todo!();
+		let rx_buffs = unsafe {
+			(*self.rx_descs).addr
+		} as _;
+		let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
+		buddy::free(rx_buffs, rx_buffs_order);
+
+		let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
+		buddy::free_kernel(self.rx_descs as _, rx_order);
+
+		let tx_order = buddy::get_order(TX_DESC_COUNT * size_of::<TXDesc>());
+		buddy::free_kernel(self.tx_descs as _, tx_order);
 	}
 }
