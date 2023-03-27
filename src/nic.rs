@@ -2,6 +2,7 @@
 
 use core::cmp::min;
 use core::mem::size_of;
+use core::slice;
 use kernel::device::bar::BAR;
 use kernel::device::manager::PhysicalDevice;
 use kernel::errno::Errno;
@@ -92,6 +93,21 @@ const TCTL_RTLC: u32 = 1 << 24;
 /// TCTL flag: No Re-transmit on underrun
 const TCTL_NRTU: u32 = 1 << 25;
 
+/// Receive descriptor status flag: Descriptor Done
+const RX_STA_DD: u8 = 1 << 0;
+/// Receive descriptor status flag: End of Packet
+const RX_STA_EOP: u8 = 1 << 1;
+/// Receive descriptor status flag: Ignore Checksum Indication
+const RX_STA_IXSM: u8 = 1 << 2;
+/// Receive descriptor status flag: Packet is 802.1Q
+const RX_STA_VP: u8 = 1 << 3;
+/// Receive descriptor status flag: TCP Checksum Calculated on Packet
+const RX_STA_TCPCS: u8 = 1 << 5;
+/// Receive descriptor status flag: IP Checksum Calculated on Packet
+const RX_STA_IPCS: u8 = 1 << 6;
+/// Receive descriptor status flag: Passed in-exact filter
+const RX_STA_PIF: u8 = 1 << 7;
+
 /// Transmit descriptor command flag: End of Packet
 const TX_CMD_EOP: u8 = 0x01;
 /// Transmit descriptor command flag: Insertion of FCS
@@ -106,6 +122,15 @@ const TX_CMD_RPS: u8 = 0x10;
 const TX_CMD_VLE: u8 = 0x40;
 /// Transmit descriptor command flag: Interrupt Delay Enable
 const TX_CMD_IDE: u8 = 0x80;
+
+/// Transmit descriptor status flag: Descriptor Done
+const TX_STA_DD: u8 = 1 << 0;
+/// Transmit descriptor status flag: Excess Collisions
+const TX_STA_EC: u8 = 1 << 1;
+/// Transmit descriptor status flag: Late Collision
+const TX_STA_LC: u8 = 1 << 2;
+/// Transmit descriptor status flag: Transmit Underrun
+const TX_STA_TU: u8 = 1 << 3;
 
 // TODO caches need to be flushed before reading/writing from/to receive/transmit buffers
 
@@ -310,7 +335,7 @@ impl NIC {
 			};
 
 			*desc = TXDesc::default();
-			desc.status = 0; // TODO
+			desc.status = TX_STA_DD;
 		}
 
 		// Set transmit ring buffer address
@@ -356,33 +381,65 @@ impl net::Interface for NIC {
 		todo!();
 	}
 
-	fn read(&mut self, _buff: &mut [u8]) -> Result<(u64, bool), Errno> {
-		// TODO
-		todo!();
+	fn read(&mut self, buff: &mut [u8]) -> Result<u64, Errno> {
+		let mut i = 0;
+		let mut prev_cursor = None;
+
+		while i < buff.len() {
+			let desc = unsafe {
+				&mut *self.tx_descs.add(self.rx_cur)
+			};
+			if desc.status & RX_STA_DD == 0 {
+				break;
+			}
+
+			let addr = memory::kern_to_virt(desc.addr as *const u8);
+			let len = min(buff.len() - i, desc.length as usize);
+			let slice = unsafe {
+				slice::from_raw_parts(addr, len)
+			};
+			buff[i..(i + len)].copy_from_slice(slice);
+
+			desc.status = 0;
+
+			i += len;
+
+			prev_cursor = Some(self.rx_cur);
+			self.rx_cur = (self.rx_cur + 1) % RX_DESC_COUNT;
+		}
+
+		if let Some(prev_cursor) = prev_cursor {
+			self.write_command(REG_RDT, prev_cursor as _);
+		}
+
+		Ok(i as _)
 	}
 
 	fn write(&mut self, buff: &[u8]) -> Result<u64, Errno> {
 		let mut i = 0;
-		let mut desc_count = 0;
 
 		// Fill descriptors
 		while i < buff.len() && i < (TX_DESC_COUNT - 1) {
-			let len = min(buff.len() - i, u16::MAX as usize);
+			let len = min(buff.len() - i, TX_BUFF_SIZE);
 
 			let desc = unsafe {
 				&mut *self.tx_descs.add(self.tx_cur)
 			};
 			desc.addr = buff.as_ptr() as _;
 			desc.length = len as _;
-			desc.cmd = 0; // TODO
+			desc.cmd = TX_CMD_RS;
 			desc.status = 0;
 
+			if i + len >= buff.len() {
+				desc.cmd |= TX_CMD_EOP | TX_CMD_IFCS;
+			}
+
 			i += len;
-			desc_count += 1;
+
+			self.tx_cur = (self.tx_cur + 1) % TX_DESC_COUNT;
 		}
 
 		// Update buffer tail
-		self.tx_cur = (self.tx_cur + desc_count) % TX_DESC_COUNT;
 		self.write_command(REG_TDT, self.tx_cur as _);
 
 		// TODO sleep and wait for interrupt telling the whole queue has been processed
