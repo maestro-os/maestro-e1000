@@ -6,6 +6,8 @@ use core::slice;
 use kernel::device::bar::BAR;
 use kernel::device::manager::PhysicalDevice;
 use kernel::errno::Errno;
+use kernel::event::CallbackHook;
+use kernel::event;
 use kernel::memory::buddy;
 use kernel::memory;
 use kernel::net::BindAddress;
@@ -182,6 +184,8 @@ pub struct NIC {
 
 	/// The BAR0 of the device.
 	bar0: BAR,
+	/// The hook of the interrupt handler.
+	int_hook: CallbackHook,
 
 	/// Tells whether the EEPROM exist.
 	eeprom_exists: bool,
@@ -208,6 +212,12 @@ impl NIC {
 
 		let bar0 = dev.get_bars()[0].clone().ok_or("Invalid BAR for NIC")?;
 
+		let int_line = dev.get_interrupt_line().ok_or("Invalid BAR for NIC")?;
+		let int_hook = event::register_callback(int_line as _, 0, |_, _, _, _| {
+			// TODO
+			todo!();
+		}).map_err(|_| "Memory allocation failed")?;
+
 		let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
 		let rx_descs = buddy::alloc_kernel(rx_order)
 			.map_err(|_| "Memory allocation failed")? as *mut RXDesc;
@@ -221,6 +231,7 @@ impl NIC {
 			command_reg,
 
 			bar0,
+			int_hook,
 
 			eeprom_exists: false,
 
