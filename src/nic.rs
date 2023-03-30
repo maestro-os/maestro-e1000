@@ -28,6 +28,13 @@ const REG_EECD: u16 = 0x10;
 /// Register address: EEPROM Read Register
 const REG_EERD: u16 = 0x14;
 
+/// Register address: Interrupt Cause Read Register
+const REG_ICR: u16 = 0xc0;
+/// Register address: Interrupt Throttling Register
+const REG_ITR: u16 = 0xc4;
+/// Register address: Interrupt Mask Set/Read Register
+const REG_IMS: u16 = 0xd0;
+
 /// Register address: Receive Control
 const REG_RCTL: u16 = 0x100;
 /// Register address: Transmit Control
@@ -56,6 +63,21 @@ const REG_TDLEN: u16 = 0x3808;
 const REG_TDH: u16 = 0x3810;
 /// Register address: Transmit Descriptor Tail
 const REG_TDT: u16 = 0x3818;
+
+/// Interrupt Mask Set flag: Transmit Descriptor Written Back
+const IMS_TXDW: u32 = 1 << 0;
+/// Interrupt Mask Set flag: Transmit Queue Empty
+const IMS_TXQE: u32 = 1 << 1;
+/// Interrupt Mask Set flag: Link Status Change
+const IMS_LSC: u32 = 1 << 2;
+/// Interrupt Mask Set flag: Receive Sequence Error
+const IMS_RXSEQ: u32 = 1 << 3;
+/// Interrupt Mask Set flag: Receive Descriptor Minimum Threshold hit
+const IMS_RXDMT0: u32 = 1 << 4;
+/// Interrupt Mask Set flag: Receiver FIFO Overrun
+const IMS_RXO: u32 = 1 << 6;
+/// Interrupt Mask Set flag: Receiver Timer Interrupt
+const IMS_RTX0: u32 = 1 << 7;
 
 /// RCTL flag: Receiver Enable
 const RCTL_EN: u32 = 1 << 1;
@@ -308,6 +330,9 @@ impl NIC {
 
 	/// Initializes transmit and receive descriptors.
 	fn init_desc(&self) -> Result<(), Errno> {
+		// Set interrupts mask
+		self.write_command(REG_IMS, IMS_TXQE | IMS_RXDMT0);
+
 		// Init receive ring buffer
 		let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
 		let rx_buffs = buddy::alloc(rx_buffs_order, buddy::FLAG_ZONE_TYPE_KERNEL)?;
@@ -370,6 +395,10 @@ impl NIC {
 		self.write_command(REG_TIPG, flags);
 
 		Ok(())
+	}
+
+	fn is_tx_queue_empty(&self) -> bool {
+		self.read_command(REG_TDH) == self.read_command(REG_TDT)
 	}
 }
 
@@ -453,7 +482,10 @@ impl net::Interface for NIC {
 		// Update buffer tail
 		self.write_command(REG_TDT, self.tx_cur as _);
 
-		// TODO sleep and wait for interrupt telling the whole queue has been processed
+		// Sleep until the whole queue has been processed
+		while !self.is_tx_queue_empty() {
+			kernel::wait();
+		}
 
 		Ok(i as _)
 	}
