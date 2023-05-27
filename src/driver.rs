@@ -1,7 +1,7 @@
 //! This module implements the driver structure.
 
 use core::any::Any;
-use kernel::device::bus::pci;
+use kernel::device::bus::pci::PCIManager;
 use kernel::device::driver::Driver;
 use kernel::device::manager::PhysicalDevice;
 use kernel::device::manager;
@@ -19,15 +19,17 @@ pub struct E1000Driver {}
 impl E1000Driver {
 	/// Creates a new instance.
 	pub fn new() -> Self {
-		let manager_ptr = manager::get_by_name("PCI").unwrap();
-		let manager_mutex = manager_ptr.get().unwrap();
-		let manager = &*manager_mutex.lock() as &dyn Any;
-		let pci_manager = manager.downcast_ref::<pci::PCIManager>().unwrap();
-
 		let s = Self {};
 
-		for dev in pci_manager.get_devices() {
-			s.on_plug(dev);
+		let manager = manager::get_by_name("PCI")
+			.and_then(|weak| weak.upgrade());
+		if let Some(manager) = manager {
+			let manager = &manager.lock() as &dyn Any;
+			let pci_manager = manager.downcast_ref::<PCIManager>().unwrap();
+
+			for dev in pci_manager.get_devices() {
+				s.on_plug(dev);
+			}
 		}
 
 		s
