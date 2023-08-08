@@ -6,13 +6,14 @@ use core::slice;
 use kernel::device::bar::BAR;
 use kernel::device::manager::PhysicalDevice;
 use kernel::errno::Errno;
-use kernel::event::CallbackHook;
 use kernel::event;
-use kernel::memory::buddy;
+use kernel::event::CallbackHook;
 use kernel::memory;
+use kernel::memory::buddy;
+use kernel::net;
+use kernel::net::buff::BuffList;
 use kernel::net::BindAddress;
 use kernel::net::MAC;
-use kernel::net;
 
 /// The number of receive descriptors.
 const RX_DESC_COUNT: usize = 128;
@@ -162,18 +163,18 @@ const TX_STA_TU: u8 = 1 << 3;
 #[derive(Default)]
 #[repr(packed)]
 struct RXDesc {
-	/// The physical address of the data.
-	addr: u64,
-	/// The length of the data.
-	length: u16,
-	/// The packet's checksum.
-	checksum: u16,
-	/// Status flags.
-	status: u8,
-	/// Error flags.
-	errors: u8,
-	/// TODO doc
-	special: u16,
+    /// The physical address of the data.
+    addr: u64,
+    /// The length of the data.
+    length: u16,
+    /// The packet's checksum.
+    checksum: u16,
+    /// Status flags.
+    status: u8,
+    /// Error flags.
+    errors: u8,
+    /// TODO doc
+    special: u16,
 }
 
 // TODO: This is the legacy structure. Add support for the new version
@@ -181,328 +182,319 @@ struct RXDesc {
 #[derive(Default)]
 #[repr(packed)]
 struct TXDesc {
-	/// The physical address of the data.
-	addr: u64,
-	/// The length of the data.
-	length: u16,
-	/// CheckSum Offset: the offset at which the checksum is to be placed in the given data.
-	cso: u8,
-	/// Command flags.
-	cmd: u8,
-	/// Status flags.
-	status: u8,
-	/// CheckSum Start: the offset at which computation of the checksum starts in the given data.
-	css: u8,
-	/// TODO doc
-	special: u16,
+    /// The physical address of the data.
+    addr: u64,
+    /// The length of the data.
+    length: u16,
+    /// CheckSum Offset: the offset at which the checksum is to be placed in the given data.
+    cso: u8,
+    /// Command flags.
+    cmd: u8,
+    /// Status flags.
+    status: u8,
+    /// CheckSum Start: the offset at which computation of the checksum starts in the given data.
+    css: u8,
+    /// TODO doc
+    special: u16,
 }
 
 /// Structure representing a Network Interface Card.
 pub struct NIC {
-	/// TODO doc
-	status_reg: u16,
-	/// TODO doc
-	command_reg: u16,
+    /// TODO doc
+    status_reg: u16,
+    /// TODO doc
+    command_reg: u16,
 
-	/// The BAR0 of the device.
-	bar0: BAR,
-	/// The hook of the interrupt handler.
-	int_hook: CallbackHook,
+    /// The BAR0 of the device.
+    bar0: BAR,
+    /// The hook of the interrupt handler.
+    int_hook: CallbackHook,
 
-	/// Tells whether the EEPROM exist.
-	eeprom_exists: bool,
+    /// Tells whether the EEPROM exist.
+    eeprom_exists: bool,
 
-	/// The NIC's mac address.
-	mac: [u8; 6],
+    /// The NIC's mac address.
+    mac: [u8; 6],
 
-	/// The list of receive descriptors.
-	rx_descs: *mut RXDesc,
-	/// The cursor in the receive ring buffer.
-	rx_cur: usize,
+    /// The list of receive descriptors.
+    rx_descs: *mut RXDesc,
+    /// The cursor in the receive ring buffer.
+    rx_cur: usize,
 
-	/// The list of transmit descriptors.
-	tx_descs: *mut TXDesc,
-	/// The cursor in the transmit ring buffer.
-	tx_cur: usize,
+    /// The list of transmit descriptors.
+    tx_descs: *mut TXDesc,
+    /// The cursor in the transmit ring buffer.
+    tx_cur: usize,
 }
 
 impl NIC {
-	/// Creates a new instance using the given device.
-	pub fn new(dev: &dyn PhysicalDevice) -> Result<Self, &str> {
-		let status_reg = dev.get_status_reg().ok_or("Invalid PCI informations for NIC")?;
-		let command_reg = dev.get_command_reg().ok_or("Invalid PCI informations for NIC")?;
+    /// Creates a new instance using the given device.
+    pub fn new(dev: &dyn PhysicalDevice) -> Result<Self, &str> {
+        let status_reg = dev
+            .get_status_reg()
+            .ok_or("Invalid PCI informations for NIC")?;
+        let command_reg = dev
+            .get_command_reg()
+            .ok_or("Invalid PCI informations for NIC")?;
 
-		let bar0 = dev.get_bars()[0].clone().ok_or("Invalid BAR for NIC")?;
+        let bar0 = dev.get_bars()[0].clone().ok_or("Invalid BAR for NIC")?;
 
-		let int_line = dev.get_interrupt_line().ok_or("Invalid BAR for NIC")?;
-		let int_hook = event::register_callback(int_line as _, 0, |_, _, _, _| {
-			// TODO
-			todo!();
-		}).map_err(|_| "Memory allocation failed")?;
+        let int_line = dev.get_interrupt_line().ok_or("Invalid BAR for NIC")?;
+        let int_hook = event::register_callback(int_line as _, |_, _, _, _| {
+            // TODO
+            todo!();
+        })
+        .map_err(|_| "Memory allocation failed")?;
 
-		let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
-		let rx_descs = buddy::alloc_kernel(rx_order)
-			.map_err(|_| "Memory allocation failed")? as *mut RXDesc;
+        let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
+        let rx_descs =
+            buddy::alloc_kernel(rx_order).map_err(|_| "Memory allocation failed")? as *mut RXDesc;
 
-		let tx_order = buddy::get_order(TX_DESC_COUNT * size_of::<TXDesc>());
-		let tx_descs = buddy::alloc_kernel(tx_order)
-			.map_err(|_| "Memory allocation failed")? as *mut TXDesc;
+        let tx_order = buddy::get_order(TX_DESC_COUNT * size_of::<TXDesc>());
+        let tx_descs =
+            buddy::alloc_kernel(tx_order).map_err(|_| "Memory allocation failed")? as *mut TXDesc;
 
-		let mut n = Self {
-			status_reg,
-			command_reg,
+        let mut n = Self {
+            status_reg,
+            command_reg,
 
-			bar0,
-			int_hook,
+            bar0,
+            int_hook,
 
-			eeprom_exists: false,
+            eeprom_exists: false,
 
-			mac: [0; 6],
+            mac: [0; 6],
 
-			rx_descs,
-			rx_cur: 0,
+            rx_descs,
+            rx_cur: 0,
 
-			tx_descs,
-			tx_cur: 0,
-		};
-		n.detect_eeprom();
-		n.read_mac();
-		n.init_desc().map_err(|_| "Memory allocation failed")?;
+            tx_descs,
+            tx_cur: 0,
+        };
+        n.detect_eeprom();
+        n.read_mac();
+        n.init_desc().map_err(|_| "Memory allocation failed")?;
 
-		Ok(n)
-	}
+        Ok(n)
+    }
 
-	/// Sends a command to read at address `addr` in the NIC memory.
-	fn read_command(&self, addr: u16) -> u32 {
-		self.bar0.read::<u32>(addr as _) as _
-	}
+    /// Sends a command to read at address `addr` in the NIC memory.
+    fn read_command(&self, addr: u16) -> u32 {
+        self.bar0.read::<u32>(addr as _) as _
+    }
 
-	/// Sends a command to write the value `val` at address `addr` in the NIC memory.
-	fn write_command(&self, addr: u16, val: u32) {
-		self.bar0.write::<u32>(addr as _, val as _);
-	}
+    /// Sends a command to write the value `val` at address `addr` in the NIC memory.
+    fn write_command(&self, addr: u16, val: u32) {
+        self.bar0.write::<u32>(addr as _, val as _);
+    }
 
-	/// Detects whether the EEPROM exists.
-	fn detect_eeprom(&mut self) {
-		self.eeprom_exists = self.read_command(REG_EECD) & (1 << 8) != 0;
-	}
+    /// Detects whether the EEPROM exists.
+    fn detect_eeprom(&mut self) {
+        self.eeprom_exists = self.read_command(REG_EECD) & (1 << 8) != 0;
+    }
 
-	/// Reads from the EEPROM at address `addr`.
-	fn eeprom_read(&self, addr: u8) -> u32 {
-		// Acquire EEPROM
-		self.write_command(REG_EECD, self.read_command(REG_EECD) | (1 << 6));
+    /// Reads from the EEPROM at address `addr`.
+    fn eeprom_read(&self, addr: u8) -> u32 {
+        // Acquire EEPROM
+        self.write_command(REG_EECD, self.read_command(REG_EECD) | (1 << 6));
 
-		// Specify read address
-		self.write_command(REG_EERD, 1 | ((addr as u32) << 8));
+        // Specify read address
+        self.write_command(REG_EERD, 1 | ((addr as u32) << 8));
 
-		let data = if self.eeprom_exists {
-			loop {
-				let val = self.read_command(REG_EERD);
-				if val & (1 << 4) != 0 {
-					break (val >> 16) & 0xffff;
-				}
-			}
-		} else {
-			// TODO
-			todo!();
-		};
+        let data = if self.eeprom_exists {
+            loop {
+                let val = self.read_command(REG_EERD);
+                if val & (1 << 4) != 0 {
+                    break (val >> 16) & 0xffff;
+                }
+            }
+        } else {
+            // TODO
+            todo!();
+        };
 
-		// Release EEPROM
-		self.write_command(REG_EECD, self.read_command(REG_EECD) & !(1 << 6));
+        // Release EEPROM
+        self.write_command(REG_EECD, self.read_command(REG_EECD) & !(1 << 6));
 
-		data
-	}
+        data
+    }
 
-	/// Reads the MAC address from the NIC's EEPROM.
-	fn read_mac(&mut self) {
-		let val = self.eeprom_read(0);
-		self.mac[0] = (val & 0xff) as u8;
-		self.mac[1] = ((val >> 8) & 0xff) as u8;
+    /// Reads the MAC address from the NIC's EEPROM.
+    fn read_mac(&mut self) {
+        let val = self.eeprom_read(0);
+        self.mac[0] = (val & 0xff) as u8;
+        self.mac[1] = ((val >> 8) & 0xff) as u8;
 
-		let val = self.eeprom_read(1);
-		self.mac[2] = (val & 0xff) as u8;
-		self.mac[3] = ((val >> 8) & 0xff) as u8;
+        let val = self.eeprom_read(1);
+        self.mac[2] = (val & 0xff) as u8;
+        self.mac[3] = ((val >> 8) & 0xff) as u8;
 
-		let val = self.eeprom_read(2);
-		self.mac[4] = (val & 0xff) as u8;
-		self.mac[5] = ((val >> 8) & 0xff) as u8;
-	}
+        let val = self.eeprom_read(2);
+        self.mac[4] = (val & 0xff) as u8;
+        self.mac[5] = ((val >> 8) & 0xff) as u8;
+    }
 
-	/// Initializes transmit and receive descriptors.
-	fn init_desc(&self) -> Result<(), Errno> {
-		// Set interrupts mask
-		self.write_command(REG_IMS, IMS_TXQE | IMS_RXDMT0);
+    /// Initializes transmit and receive descriptors.
+    fn init_desc(&self) -> Result<(), Errno> {
+        // Set interrupts mask
+        self.write_command(REG_IMS, IMS_TXQE | IMS_RXDMT0);
 
-		// Init receive ring buffer
-		let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
-		let rx_buffs = buddy::alloc(rx_buffs_order, buddy::FLAG_ZONE_TYPE_KERNEL)?;
-		for i in 0..RX_DESC_COUNT {
-			let desc = unsafe {
-				&mut *self.rx_descs.add(i)
-			};
+        // Init receive ring buffer
+        let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
+        let rx_buffs = buddy::alloc(rx_buffs_order, buddy::FLAG_ZONE_TYPE_KERNEL)?;
+        for i in 0..RX_DESC_COUNT {
+            let desc = unsafe { &mut *self.rx_descs.add(i) };
 
-			*desc = RXDesc::default();
-			desc.addr = unsafe {
-				rx_buffs.add(i * RX_BUFF_SIZE)
-			} as _;
-		}
+            *desc = RXDesc::default();
+            desc.addr = unsafe { rx_buffs.add(i * RX_BUFF_SIZE) } as _;
+        }
 
-		// Set receive ring buffer address
-		let phys_ptr = memory::kern_to_phys(self.rx_descs);
-		self.write_command(REG_RDBAL, ((phys_ptr as u64) & 0xffffffff) as _);
-		self.write_command(REG_RDBAH, ((phys_ptr as u64) >> 32) as _);
+        // Set receive ring buffer address
+        let phys_ptr = memory::kern_to_phys(self.rx_descs);
+        self.write_command(REG_RDBAL, ((phys_ptr as u64) & 0xffffffff) as _);
+        self.write_command(REG_RDBAH, ((phys_ptr as u64) >> 32) as _);
 
-		// Set receive ring buffer length
-		self.write_command(REG_RDLEN, (RX_DESC_COUNT * size_of::<RXDesc>()) as u32);
+        // Set receive ring buffer length
+        self.write_command(REG_RDLEN, (RX_DESC_COUNT * size_of::<RXDesc>()) as u32);
 
-		// Set receive ring buffer head and tail
-		self.write_command(REG_RDH, 0);
-		self.write_command(REG_RDT, (RX_DESC_COUNT - 1) as _);
+        // Set receive ring buffer head and tail
+        self.write_command(REG_RDH, 0);
+        self.write_command(REG_RDT, (RX_DESC_COUNT - 1) as _);
 
-		// Set receive flags
-		let mut flags = RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM;
-		flags |= RCTL_BSEX | (0b01 << 16); // 16K buffer
-		self.write_command(REG_RCTL, flags);
+        // Set receive flags
+        let mut flags = RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM;
+        flags |= RCTL_BSEX | (0b01 << 16); // 16K buffer
+        self.write_command(REG_RCTL, flags);
 
-		// Init transmit ring buffer
-		for i in 0..TX_DESC_COUNT {
-			let desc = unsafe {
-				&mut *self.tx_descs.add(i)
-			};
+        // Init transmit ring buffer
+        for i in 0..TX_DESC_COUNT {
+            let desc = unsafe { &mut *self.tx_descs.add(i) };
 
-			*desc = TXDesc::default();
-			desc.status = TX_STA_DD;
-		}
+            *desc = TXDesc::default();
+            desc.status = TX_STA_DD;
+        }
 
-		// Set transmit ring buffer address
-		let phys_ptr = memory::kern_to_phys(self.tx_descs);
-		self.write_command(REG_TDBAL, ((phys_ptr as u64) & 0xffffffff) as _);
-		self.write_command(REG_TDBAH, ((phys_ptr as u64) >> 32) as _);
+        // Set transmit ring buffer address
+        let phys_ptr = memory::kern_to_phys(self.tx_descs);
+        self.write_command(REG_TDBAL, ((phys_ptr as u64) & 0xffffffff) as _);
+        self.write_command(REG_TDBAH, ((phys_ptr as u64) >> 32) as _);
 
-		// Set transmit ring buffer length
-		self.write_command(REG_TDLEN, (TX_DESC_COUNT * size_of::<TXDesc>()) as u32);
+        // Set transmit ring buffer length
+        self.write_command(REG_TDLEN, (TX_DESC_COUNT * size_of::<TXDesc>()) as u32);
 
-		// Set transmit ring buffer head and tail
-		self.write_command(REG_TDH, 0);
-		self.write_command(REG_TDT, 0);
+        // Set transmit ring buffer head and tail
+        self.write_command(REG_TDH, 0);
+        self.write_command(REG_TDT, 0);
 
-		// Set transmit flags
-		let retry_count = 0xf;
-		let collision_dist = 0x200;
-		let flags = TCTL_EN | (retry_count << 4) | (collision_dist << 12);
-		self.write_command(REG_TCTL, flags);
-		let flags = 0; // TODO
-		self.write_command(REG_TIPG, flags);
+        // Set transmit flags
+        let retry_count = 0xf;
+        let collision_dist = 0x200;
+        let flags = TCTL_EN | (retry_count << 4) | (collision_dist << 12);
+        self.write_command(REG_TCTL, flags);
+        let flags = 0; // TODO
+        self.write_command(REG_TIPG, flags);
 
-		Ok(())
-	}
+        Ok(())
+    }
 
-	fn is_tx_queue_empty(&self) -> bool {
-		self.read_command(REG_TDH) == self.read_command(REG_TDT)
-	}
+    fn is_tx_queue_empty(&self) -> bool {
+        self.read_command(REG_TDH) == self.read_command(REG_TDT)
+    }
 }
 
 impl net::Interface for NIC {
-	fn get_name(&self) -> &[u8] {
-		b"eth"
-	}
+    fn get_name(&self) -> &[u8] {
+        b"eth"
+    }
 
-	fn is_up(&self) -> bool {
-		// TODO
-		todo!();
-	}
+    fn is_up(&self) -> bool {
+        // TODO
+        todo!();
+    }
 
-	fn get_mac(&self) -> &MAC {
-		&self.mac
-	}
+    fn get_mac(&self) -> &MAC {
+        &self.mac
+    }
 
-	fn get_addresses(&self) -> &[BindAddress] {
-		// TODO
-		todo!();
-	}
+    fn get_addresses(&self) -> &[BindAddress] {
+        // TODO
+        todo!();
+    }
 
-	fn read(&mut self, buff: &mut [u8]) -> Result<u64, Errno> {
-		let mut i = 0;
-		let mut prev_cursor = None;
+    fn read(&mut self, buff: &mut [u8]) -> Result<(), Errno> {
+        let mut i = 0;
+        let mut prev_cursor = None;
 
-		while i < buff.len() {
-			let desc = unsafe {
-				&mut *self.tx_descs.add(self.rx_cur)
-			};
-			if desc.status & RX_STA_DD == 0 {
-				break;
-			}
+        while i < buff.len() {
+            let desc = unsafe { &mut *self.tx_descs.add(self.rx_cur) };
+            if desc.status & RX_STA_DD == 0 {
+                break;
+            }
 
-			let addr = memory::kern_to_virt(desc.addr as *const u8);
-			let len = min(buff.len() - i, desc.length as usize);
-			let slice = unsafe {
-				slice::from_raw_parts(addr, len)
-			};
-			buff[i..(i + len)].copy_from_slice(slice);
+            let addr = memory::kern_to_virt(desc.addr as *const u8);
+            let len = min(buff.len() - i, desc.length as usize);
+            let slice = unsafe { slice::from_raw_parts(addr, len) };
+            buff[i..(i + len)].copy_from_slice(slice);
 
-			desc.status = 0;
+            desc.status = 0;
 
-			i += len;
+            i += len;
 
-			prev_cursor = Some(self.rx_cur);
-			self.rx_cur = (self.rx_cur + 1) % RX_DESC_COUNT;
-		}
+            prev_cursor = Some(self.rx_cur);
+            self.rx_cur = (self.rx_cur + 1) % RX_DESC_COUNT;
+        }
 
-		if let Some(prev_cursor) = prev_cursor {
-			self.write_command(REG_RDT, prev_cursor as _);
-		}
+        if let Some(prev_cursor) = prev_cursor {
+            self.write_command(REG_RDT, prev_cursor as _);
+        }
 
-		Ok(i as _)
-	}
+        Ok(())
+    }
 
-	fn write(&mut self, buff: &[u8]) -> Result<u64, Errno> {
-		let mut i = 0;
+    fn write(&mut self, buff: &BuffList<'_>) -> Result<(), Errno> {
+        let mut i = 0;
 
-		// Fill descriptors
-		while i < buff.len() && i < (TX_DESC_COUNT - 1) {
-			let len = min(buff.len() - i, TX_BUFF_SIZE);
+        // Fill descriptors
+        while i < buff.len() && i < (TX_DESC_COUNT - 1) {
+            let len = min(buff.len() - i, TX_BUFF_SIZE);
 
-			let desc = unsafe {
-				&mut *self.tx_descs.add(self.tx_cur)
-			};
-			desc.addr = buff.as_ptr() as _;
-			desc.length = len as _;
-			desc.cmd = TX_CMD_RS;
-			desc.status = 0;
+            let desc = unsafe { &mut *self.tx_descs.add(self.tx_cur) };
+            // TODO desc.addr = buff.as_ptr() as _;
+            desc.length = len as _;
+            desc.cmd = TX_CMD_RS;
+            desc.status = 0;
 
-			if i + len >= buff.len() {
-				desc.cmd |= TX_CMD_EOP | TX_CMD_IFCS;
-			}
+            if i + len >= buff.len() {
+                desc.cmd |= TX_CMD_EOP | TX_CMD_IFCS;
+            }
 
-			i += len;
+            i += len;
 
-			self.tx_cur = (self.tx_cur + 1) % TX_DESC_COUNT;
-		}
+            self.tx_cur = (self.tx_cur + 1) % TX_DESC_COUNT;
+        }
 
-		// Update buffer tail
-		self.write_command(REG_TDT, self.tx_cur as _);
+        // Update buffer tail
+        self.write_command(REG_TDT, self.tx_cur as _);
 
-		// Sleep until the whole queue has been processed
-		while !self.is_tx_queue_empty() {
-			kernel::wait();
-		}
+        // Sleep until the whole queue has been processed
+        while !self.is_tx_queue_empty() {
+            kernel::wait();
+        }
 
-		Ok(i as _)
-	}
+        Ok(())
+    }
 }
 
 impl Drop for NIC {
-	fn drop(&mut self) {
-		let rx_buffs = unsafe {
-			(*self.rx_descs).addr
-		} as _;
-		let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
-		buddy::free(rx_buffs, rx_buffs_order);
+    fn drop(&mut self) {
+        let rx_buffs = unsafe { (*self.rx_descs).addr } as _;
+        let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
+        buddy::free(rx_buffs, rx_buffs_order);
 
-		let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
-		buddy::free_kernel(self.rx_descs as _, rx_order);
+        let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
+        buddy::free_kernel(self.rx_descs as _, rx_order);
 
-		let tx_order = buddy::get_order(TX_DESC_COUNT * size_of::<TXDesc>());
-		buddy::free_kernel(self.tx_descs as _, tx_order);
-	}
+        let tx_order = buddy::get_order(TX_DESC_COUNT * size_of::<TXDesc>());
+        buddy::free_kernel(self.tx_descs as _, tx_order);
+    }
 }
