@@ -2,6 +2,7 @@
 
 use core::cmp::min;
 use core::mem::size_of;
+use core::ptr;
 use core::slice;
 use kernel::device::bar::BAR;
 use kernel::device::manager::PhysicalDevice;
@@ -341,7 +342,7 @@ impl NIC {
 
         // Init receive ring buffer
         let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
-        let rx_buffs = buddy::alloc(rx_buffs_order, buddy::FLAG_ZONE_TYPE_KERNEL)?;
+        let rx_buffs = buddy::alloc_kernel(rx_buffs_order)?;
         for i in 0..RX_DESC_COUNT {
             let desc = unsafe { &mut *self.rx_descs.add(i) };
 
@@ -367,10 +368,13 @@ impl NIC {
         self.write_command(REG_RCTL, flags);
 
         // Init transmit ring buffer
+        let tx_buffs_order = buddy::get_order(TX_DESC_COUNT * TX_BUFF_SIZE);
+        let tx_buffs = buddy::alloc_kernel(tx_buffs_order)?;
         for i in 0..TX_DESC_COUNT {
             let desc = unsafe { &mut *self.tx_descs.add(i) };
 
             *desc = TXDesc::default();
+            desc.addr = unsafe { tx_buffs.add(i * TX_BUFF_SIZE) } as _;
             desc.status = TX_STA_DD;
         }
 
@@ -395,10 +399,6 @@ impl NIC {
         self.write_command(REG_TIPG, flags);
 
         Ok(())
-    }
-
-    fn is_tx_queue_empty(&self) -> bool {
-        self.read_command(REG_TDH) == self.read_command(REG_TDT)
     }
 }
 
@@ -452,34 +452,81 @@ impl net::Interface for NIC {
     }
 
     fn write(&mut self, buff: &BuffList<'_>) -> Result<(), Errno> {
-        let mut i = 0;
+        // The function takes a set of input buffers and has to write them onto another set of
+        // buffers (the descriptors in use in the device's ring buffer) which may have a different
+        // size.
+        //
+        // To do so, it uses a loop which iterates on both buffers and copies data at each
+        // iteration.
+        //
+        // The length of the copy is the smallest length of remaining data in both buffer, to make
+        // sure there is no overflow.
+        //
+        // At each iteration, at least one of both buffers will be exhausted, which means at least
+        // the complexity is at least `O(min(a, b))` and at most `O(max(a, b))`, where `a` and `b`
+        // are the number of input buffers and the number of descriptors.
+        //
+        // If the next descriptors are busy, the function must wait until it becomes available by
+        // waiting for an interruption.
 
-        // Fill descriptors
-        while i < buff.len() && i < (TX_DESC_COUNT - 1) {
-            let len = min(buff.len() - i, TX_BUFF_SIZE);
+        let mut src_iter = buff.iter();
+        let descriptors = unsafe { slice::from_raw_parts_mut(self.tx_descs, TX_DESC_COUNT) };
 
-            let desc = unsafe { &mut *self.tx_descs.add(self.tx_cur) };
-            // TODO desc.addr = buff.as_ptr() as _;
-            desc.length = len as _;
+        // get the next descriptor and wait if necessary
+        fn next_desc(s: &mut NIC, descriptors: &[TXDesc]) {
+            s.tx_cur = (s.tx_cur + 1) % TX_DESC_COUNT;
+            let desc = &descriptors[s.tx_cur];
+
+            // if the descriptor is busy, wait for it to become available again
+            loop {
+                let status = unsafe { ptr::read(&desc.status) };
+                if status & RX_STA_DD == 0 {
+                    break;
+                }
+
+                // TODO wait for transmit interrupt
+                todo!()
+            }
+        }
+
+        let mut buff = src_iter.next();
+        let mut buff_off = 0;
+        // if the buffer is empty, do nothing
+        if buff.is_none() {
+            return Ok(());
+        }
+
+        while let Some(ref src) = buff {
+            let desc = &mut descriptors[self.tx_cur];
+            let desc_len = desc.length as usize;
+            // if the descriptor is full, go to next
+            if desc_len >= TX_BUFF_SIZE {
+                next_desc(self, descriptors);
+                continue;
+            }
+
+            let dst = unsafe { slice::from_raw_parts_mut(desc.addr as *mut u8, TX_BUFF_SIZE) };
+
+            // copy data
+            let copy_len = min(src.len() - buff_off, TX_BUFF_SIZE - desc_len);
+            dst[desc_len..].copy_from_slice(&src[buff_off..(buff_off + copy_len)]);
+            buff_off += copy_len;
+
+            desc.length = (desc_len + copy_len) as _;
             desc.cmd = TX_CMD_RS;
             desc.status = 0;
 
-            if i + len >= buff.len() {
-                desc.cmd |= TX_CMD_EOP | TX_CMD_IFCS;
+            // get next buffer if the current is exhausted
+            if buff_off >= src.len() {
+                buff = src_iter.next();
+                buff_off = 0;
             }
-
-            i += len;
-
-            self.tx_cur = (self.tx_cur + 1) % TX_DESC_COUNT;
         }
 
-        // Update buffer tail
+        // flush descriptors
+        let desc = &mut descriptors[self.tx_cur];
+        desc.cmd |= TX_CMD_EOP | TX_CMD_IFCS;
         self.write_command(REG_TDT, self.tx_cur as _);
-
-        // Sleep until the whole queue has been processed
-        while !self.is_tx_queue_empty() {
-            kernel::wait();
-        }
 
         Ok(())
     }
@@ -489,10 +536,14 @@ impl Drop for NIC {
     fn drop(&mut self) {
         let rx_buffs = unsafe { (*self.rx_descs).addr } as _;
         let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
-        buddy::free(rx_buffs, rx_buffs_order);
+        buddy::free_kernel(rx_buffs, rx_buffs_order);
 
         let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
         buddy::free_kernel(self.rx_descs as _, rx_order);
+
+        let tx_buffs = unsafe { (*self.tx_descs).addr } as _;
+        let tx_buffs_order = buddy::get_order(TX_DESC_COUNT * TX_BUFF_SIZE);
+        buddy::free_kernel(tx_buffs, tx_buffs_order);
 
         let tx_order = buddy::get_order(TX_DESC_COUNT * size_of::<TXDesc>());
         buddy::free_kernel(self.tx_descs as _, tx_order);
