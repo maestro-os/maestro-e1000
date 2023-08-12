@@ -1,10 +1,14 @@
 //! This module implements the driver structure.
 
 use core::any::Any;
+use core::convert::TryInto;
 use kernel::device::bus::pci::PCIManager;
 use kernel::device::driver::Driver;
 use kernel::device::manager;
 use kernel::device::manager::PhysicalDevice;
+use kernel::net;
+use kernel::util::lock::Mutex;
+use kernel::util::ptr::arc::Arc;
 use nic::NIC;
 
 /// Vendor ID for Intel.
@@ -50,10 +54,16 @@ impl Driver for E1000Driver {
         match dev.get_device_id() {
             // TODO Add real NICs
             DEVICE_EMU => {
+                // TODO support devices with multiple interfaces
                 match NIC::new(dev) {
-                    Ok(_nic) => {
-                        // TODO Insert a new device on the network manager?
-                        panic!();
+                    Ok(nic) => {
+                        // TODO do not unwrap errors
+                        // TODO figure out how to get the name of the interface
+                        let name = b"TODO".try_into().unwrap();
+                        let iface = Arc::new(Mutex::new(nic)).unwrap();
+
+                        let mut ifaces = net::INTERFACES.lock();
+                        ifaces.insert(name, iface).unwrap();
                     }
 
                     Err(e) => {
