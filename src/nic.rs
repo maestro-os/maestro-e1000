@@ -15,6 +15,7 @@ use kernel::net;
 use kernel::net::buff::BuffList;
 use kernel::net::BindAddress;
 use kernel::net::MAC;
+use kernel::util::math;
 
 /// The number of receive descriptors.
 const RX_DESC_COUNT: usize = 128;
@@ -247,13 +248,20 @@ impl NIC {
         })
         .map_err(|_| "Memory allocation failed")?;
 
-        let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
-        let rx_descs =
-            buddy::alloc_kernel(rx_order).map_err(|_| "Memory allocation failed")? as *mut RXDesc;
+        let rx_order = buddy::get_order(math::ceil_div(
+            RX_DESC_COUNT * size_of::<RXDesc>(),
+            memory::PAGE_SIZE,
+        ));
+        let rx_descs = buddy::alloc_kernel(rx_order).map_err(|_| "Memory allocation failed")?;
 
-        let tx_order = buddy::get_order(TX_DESC_COUNT * size_of::<TXDesc>());
-        let tx_descs =
-            buddy::alloc_kernel(tx_order).map_err(|_| "Memory allocation failed")? as *mut TXDesc;
+        let tx_order = buddy::get_order(math::ceil_div(
+            TX_DESC_COUNT * size_of::<TXDesc>(),
+            memory::PAGE_SIZE,
+        ));
+        let Ok(tx_descs) = buddy::alloc_kernel(tx_order) else {
+            buddy::free_kernel(rx_descs, rx_order);
+            return Err("Memory allocation failed");
+        };
 
         let mut n = Self {
             status_reg,
@@ -266,10 +274,10 @@ impl NIC {
 
             mac: [0; 6],
 
-            rx_descs,
+            rx_descs: rx_descs as _,
             rx_cur: 0,
 
-            tx_descs,
+            tx_descs: tx_descs as _,
             tx_cur: 0,
         };
         n.detect_eeprom();
@@ -341,13 +349,17 @@ impl NIC {
         self.write_command(REG_IMS, IMS_TXQE | IMS_RXDMT0);
 
         // Init receive ring buffer
-        let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
+        let rx_buffs_order = buddy::get_order(math::ceil_div(
+            RX_DESC_COUNT * RX_BUFF_SIZE,
+            memory::PAGE_SIZE,
+        ));
         let rx_buffs = buddy::alloc_kernel(rx_buffs_order)?;
         for i in 0..RX_DESC_COUNT {
             let desc = unsafe { &mut *self.rx_descs.add(i) };
+            let ptr = unsafe { rx_buffs.add(i * TX_BUFF_SIZE) };
 
             *desc = RXDesc::default();
-            desc.addr = unsafe { rx_buffs.add(i * RX_BUFF_SIZE) } as _;
+            desc.addr = ptr as _;
         }
 
         // Set receive ring buffer address
@@ -368,13 +380,17 @@ impl NIC {
         self.write_command(REG_RCTL, flags);
 
         // Init transmit ring buffer
-        let tx_buffs_order = buddy::get_order(TX_DESC_COUNT * TX_BUFF_SIZE);
+        let tx_buffs_order = buddy::get_order(math::ceil_div(
+            TX_DESC_COUNT * TX_BUFF_SIZE,
+            memory::PAGE_SIZE,
+        ));
         let tx_buffs = buddy::alloc_kernel(tx_buffs_order)?;
         for i in 0..TX_DESC_COUNT {
             let desc = unsafe { &mut *self.tx_descs.add(i) };
+            let ptr = unsafe { tx_buffs.add(i * TX_BUFF_SIZE) };
 
             *desc = TXDesc::default();
-            desc.addr = unsafe { tx_buffs.add(i * TX_BUFF_SIZE) } as _;
+            desc.addr = ptr as _;
             desc.status = TX_STA_DD;
         }
 
@@ -535,17 +551,29 @@ impl net::Interface for NIC {
 impl Drop for NIC {
     fn drop(&mut self) {
         let rx_buffs = unsafe { (*self.rx_descs).addr } as _;
-        let rx_buffs_order = buddy::get_order(RX_DESC_COUNT * RX_BUFF_SIZE);
+        let rx_buffs_order = buddy::get_order(math::ceil_div(
+            RX_DESC_COUNT * RX_BUFF_SIZE,
+            memory::PAGE_SIZE,
+        ));
         buddy::free_kernel(rx_buffs, rx_buffs_order);
 
-        let rx_order = buddy::get_order(RX_DESC_COUNT * size_of::<RXDesc>());
+        let rx_order = buddy::get_order(math::ceil_div(
+            RX_DESC_COUNT * size_of::<RXDesc>(),
+            memory::PAGE_SIZE,
+        ));
         buddy::free_kernel(self.rx_descs as _, rx_order);
 
         let tx_buffs = unsafe { (*self.tx_descs).addr } as _;
-        let tx_buffs_order = buddy::get_order(TX_DESC_COUNT * TX_BUFF_SIZE);
+        let tx_buffs_order = buddy::get_order(math::ceil_div(
+            TX_DESC_COUNT * TX_BUFF_SIZE,
+            memory::PAGE_SIZE,
+        ));
         buddy::free_kernel(tx_buffs, tx_buffs_order);
 
-        let tx_order = buddy::get_order(TX_DESC_COUNT * size_of::<TXDesc>());
+        let tx_order = buddy::get_order(math::ceil_div(
+            TX_DESC_COUNT * size_of::<TXDesc>(),
+            memory::PAGE_SIZE,
+        ));
         buddy::free_kernel(self.tx_descs as _, tx_order);
     }
 }

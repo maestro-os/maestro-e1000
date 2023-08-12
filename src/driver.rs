@@ -57,7 +57,7 @@ impl Driver for E1000Driver {
                     }
 
                     Err(e) => {
-                        kernel::println!("e1000 error: {}", e);
+                        kernel::println!("e1000 error: {e}");
                     }
                 }
             }
